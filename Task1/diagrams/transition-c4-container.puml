@@ -1,0 +1,82 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+LAYOUT_LEFT_RIGHT()
+
+title C4 Container Diagram — AdScale (Transition, через 3 месяца)
+
+AddElementTag("new", $bgColor="#2E7D32", $fontColor="#FFFFFF", $legendText="Новый компонент")
+AddElementTag("legacy", $bgColor="#8D6E63", $fontColor="#FFFFFF", $legendText="Остаётся в монолите")
+
+' ====================== Акторы и внешние системы ======================
+Person(advertiser, "Рекламодатель", "Управляет кампаниями через личный кабинет")
+Person_Ext(endUser, "Пользователь сайта/приложения", "Видит рекламу, кликает")
+System_Ext(dspExisting, "Текущие DSP-партнёры", "OpenRTB 2.5")
+System_Ext(dspNew, "Новый DSP-партнёр", "OpenRTB 2.6, SLA ≤ 80 мс")
+System_Ext(paymentGateway, "Платёжный шлюз", "Пополнение бюджетов")
+
+' ====================== Hot path ======================
+System_Boundary(rtb, "RTB-контур (Kubernetes)") {
+    Container(edge, "Edge RTB Gateway", "Envoy", "mTLS/API-ключи, rate limiting, тайм-аут 70 мс, circuit breaker, canary-маршрутизация", $tags="new")
+    Container(bidding, "Bidding Service", "C++ / Go", "Ad Server + Auction Engine: подбор кандидатов и аукцион по снапшоту кампаний в памяти", $tags="new")
+    Container(collector, "Event Collector", "Go", "Win/billing notice, показы, клики → Kafka", $tags="new")
+    ContainerDb(redis, "Redis Cluster", "Redis 7", "Бюджеты и pacing, frequency caps, сегменты пользователей", $tags="new")
+}
+
+' ====================== Платформа событий ======================
+System_Boundary(events, "Платформа событий") {
+    ContainerQueue(kafka, "Apache Kafka", "Kafka + Schema Registry", "auction.results, ad.impressions, ad.clicks, campaign.changes", $tags="new")
+    Container(debezium, "CDC Connector", "Debezium", "Изменения кампаний и бюджетов из PostgreSQL → Kafka", $tags="new")
+    Container(stats, "Statistics Consumer", "Python / Go", "Дедупликация, агрегаты, batch-вставка", $tags="new")
+    ContainerDb(clickhouse, "ClickHouse", "ClickHouse", "Сырые события и агрегаты статистики", $tags="new")
+}
+
+' ====================== Монолит ======================
+System_Boundary(monolith, "AdScale Monolith (модуляризуется)") {
+    Container(adCabinet, "Advertiser Dashboard", "Node.js + JS", "UI и backend кабинета", $tags="legacy")
+    Container(financialService, "Financial Module", "Go", "Списания по агрегированным событиям из Kafka, балансы, счета", $tags="legacy")
+    Container(analyticsService, "Analytics Module", "Python", "Отчёты по ClickHouse и read replica", $tags="legacy")
+    Container(creative, "Delivery / Creative Module", "Node.js", "Предрендер HTML/JS-шаблонов креативов", $tags="legacy")
+}
+
+System_Boundary(db, "PostgreSQL HA") {
+    ContainerDb(pgPrimary, "PostgreSQL Primary", "PostgreSQL + Patroni + PgBouncer", "Кампании, финансы, кабинет (OLTP)")
+    ContainerDb(pgReplica, "PostgreSQL Replicas", "Streaming replication x2", "HA-standby + read replica для аналитики")
+}
+
+Container(obs, "Observability", "OpenTelemetry, Prometheus, Grafana, Loki", "SLO по партнёрам, трассировка", $tags="new")
+
+' ====================== Связи ======================
+Rel(dspExisting, edge, "Bid requests", "HTTPS / OpenRTB")
+Rel(dspNew, edge, "Bid requests", "HTTPS / OpenRTB")
+Rel(edge, bidding, "Маршрутизирует", "HTTP/2")
+Rel(bidding, redis, "Бюджет, caps, сегменты", "RESP, ≤ 5 мс")
+Rel(bidding, kafka, "auction.results", "async")
+Rel(endUser, collector, "Показ / клик", "HTTPS")
+Rel(dspNew, collector, "Win / billing notice", "HTTPS")
+Rel(collector, kafka, "ad.impressions / ad.clicks", "async")
+
+Rel(pgPrimary, debezium, "WAL", "logical replication")
+Rel(debezium, kafka, "campaign.changes", "CDC")
+Rel(kafka, bidding, "Обновление снапшота", "consume")
+Rel(kafka, stats, "События", "consume")
+Rel(stats, clickhouse, "Batch insert", "native")
+Rel(kafka, financialService, "Оплачиваемые события", "consume")
+
+Rel(advertiser, adCabinet, "Управление кампаниями", "HTTPS")
+Rel(adCabinet, pgPrimary, "CRUD", "SQL via PgBouncer")
+Rel(adCabinet, paymentGateway, "Пополнение", "HTTPS / REST")
+Rel(financialService, pgPrimary, "Транзакции", "SQL")
+Rel(analyticsService, pgReplica, "Отчёты", "SQL, read-only")
+Rel(analyticsService, clickhouse, "Отчёты по событиям", "SQL")
+Rel(pgPrimary, pgReplica, "Репликация", "streaming")
+Rel(creative, redis, "Шаблоны креативов", "RESP")
+
+note right of bidding
+  **Нет PostgreSQL на hot path**
+  Внутренний дедлайн 70 мс → no-bid
+  Горизонтальное масштабирование (HPA)
+end note
+
+@enduml

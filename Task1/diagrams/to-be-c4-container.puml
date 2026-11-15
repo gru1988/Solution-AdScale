@@ -1,0 +1,101 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+LAYOUT_LEFT_RIGHT()
+
+title C4 Container Diagram — AdScale (TO-BE, через год)
+
+AddElementTag("hot", $bgColor="#C62828", $fontColor="#FFFFFF", $legendText="Hot path (latency-critical)")
+AddElementTag("async", $bgColor="#1565C0", $fontColor="#FFFFFF", $legendText="Асинхронная обработка")
+AddElementTag("mgmt", $bgColor="#6A1B9A", $fontColor="#FFFFFF", $legendText="Управление и финансы")
+AddElementTag("infra", $bgColor="#455A64", $fontColor="#FFFFFF", $legendText="Инфраструктура")
+
+' ====================== Акторы ======================
+Person(advertiser, "Рекламодатель", "Кампании, бюджеты, отчёты")
+Person_Ext(endUser, "Пользователь сайта/приложения", "Видит рекламу, кликает")
+System_Ext(dsp, "DSP / SSP партнёры", "OpenRTB 2.5/2.6; несколько площадок")
+System_Ext(paymentGateway, "Платёжные шлюзы", "Пополнение бюджетов")
+System_Ext(cdn, "CDN", "Раздача креативов")
+
+System_Boundary(adscale, "AdScale Platform (Kubernetes, 2 региона)") {
+
+    ' ---------- Входы ----------
+    Container(edge, "Edge RTB Gateway", "Envoy", "mTLS / API-ключи, rate limit по партнёру, тайм-ауты, outlier detection, метрики latency", $tags="infra")
+    Container(apiGw, "API Gateway", "Envoy Gateway", "JWT/OAuth2, лимиты, маршрутизация к BFF", $tags="infra")
+
+    ' ---------- Hot path ----------
+    Container(bidding, "Bidding Service", "C++ / Go", "Подбор кандидатов + аукцион; снапшот кампаний в памяти", $tags="hot")
+    Container(profile, "User Profile Service", "Go, gRPC", "Сегменты, frequency capping", $tags="hot")
+    ContainerDb(profileDb, "Profile Store", "Redis Cluster / Aerospike", "Профили пользователей (KV)", $tags="hot")
+    Container(budget, "Budget & Pacing Service", "Go, gRPC", "Выдача lease бюджета, pacing, учёт расхода", $tags="hot")
+    ContainerDb(budgetDb, "Budget Store", "Redis Cluster", "Счётчики расхода и lease", $tags="hot")
+    Container(collector, "Event Collector", "Go", "Win/billing notice, показы, клики → Kafka", $tags="hot")
+
+    ' ---------- Платформа событий ----------
+    ContainerQueue(kafka, "Event Bus", "Apache Kafka + Schema Registry (Avro)", "auction.results, ad.impressions, ad.clicks, campaign.changes, budget.spend, finance.charges", $tags="infra")
+
+    ' ---------- Асинхронная обработка ----------
+    Container(stats, "Statistics Service", "Go / Python", "Дедупликация, антифрод, агрегаты, реалтайм-счётчики", $tags="async")
+    ContainerDb(clickhouse, "Events DWH", "ClickHouse (шардирован)", "Сырые события и агрегаты", $tags="async")
+    Container(analytics, "Analytics Service", "Python", "Отчёты, срезы, отчётность для DSP", $tags="async")
+
+    ' ---------- Управление ----------
+    Container(bff, "Advertiser BFF", "Node.js", "Backend-for-frontend кабинета", $tags="mgmt")
+    Container(dashboard, "Advertiser Dashboard", "React SPA", "UI рекламодателя", $tags="mgmt")
+    Container(campaign, "Campaign Service", "Go", "Кампании, креативы, таргетинг, ставки; Outbox", $tags="mgmt")
+    ContainerDb(campaignDb, "Campaign DB", "PostgreSQL + Patroni", "Конфигурация рекламы, партнёры", $tags="mgmt")
+    Container(partner, "Partner Config Service", "Go", "Реестр DSP/SSP: эндпоинты, квоты, форматы", $tags="mgmt")
+    Container(creative, "Creative Delivery", "Node.js", "Загрузка креативов, предрендер шаблонов", $tags="mgmt")
+    ContainerDb(s3, "Object Storage", "S3", "Креативы, архив событий, бэкапы", $tags="infra")
+    Container(finance, "Finance Service", "Go", "Леджер (double-entry), списания, счета, сверка; Outbox", $tags="mgmt")
+    ContainerDb(financeDb, "Finance DB", "PostgreSQL + Patroni (sync)", "Леджер, балансы, идемпотентные ключи", $tags="mgmt")
+    Container(payment, "Payment Adapter", "Go", "Интеграция с платёжными шлюзами, webhooks", $tags="mgmt")
+
+    ' ---------- Платформа ----------
+    Container(obs, "Observability", "OpenTelemetry, Prometheus, Grafana, Tempo, Loki", "SLO, трейсы, алерты", $tags="infra")
+}
+
+' ====================== Связи: RTB ======================
+Rel(dsp, edge, "Bid request / response", "HTTPS, OpenRTB")
+Rel(edge, bidding, "Маршрутизация", "HTTP/2")
+Rel(bidding, profile, "GetProfile (≤ 8 мс)", "gRPC")
+Rel(profile, profileDb, "Чтение/запись", "RESP")
+Rel(bidding, budget, "Lease бюджета (фоново)", "gRPC")
+Rel(budget, budgetDb, "Атомарные счётчики", "RESP")
+Rel(bidding, kafka, "auction.results", "async")
+Rel(dsp, collector, "Win / billing notice", "HTTPS")
+Rel(endUser, collector, "Показы / клики", "HTTPS")
+Rel(endUser, cdn, "Загрузка креатива", "HTTPS")
+Rel(collector, kafka, "ad.impressions / ad.clicks", "async")
+
+' ====================== Связи: события ======================
+Rel(kafka, bidding, "campaign.changes", "consume")
+Rel(kafka, stats, "События", "consume")
+Rel(kafka, budget, "Фактический расход", "consume")
+Rel(kafka, profile, "Обновление caps/сегментов", "consume")
+Rel(kafka, finance, "Оплачиваемые события", "consume")
+Rel(stats, clickhouse, "Batch insert", "native")
+Rel(analytics, clickhouse, "Аналитические запросы", "SQL")
+
+' ====================== Связи: управление ======================
+Rel(advertiser, dashboard, "Работа в кабинете", "HTTPS")
+Rel(dashboard, apiGw, "API", "HTTPS / REST")
+Rel(apiGw, bff, "Маршрутизация", "HTTP")
+Rel(bff, campaign, "Кампании", "gRPC")
+Rel(bff, finance, "Балансы, счета", "gRPC")
+Rel(bff, analytics, "Отчёты", "gRPC")
+Rel(bff, creative, "Загрузка креативов", "gRPC")
+Rel(campaign, campaignDb, "CRUD + Outbox", "SQL")
+Rel(campaign, kafka, "campaign.changes", "Outbox / Debezium")
+Rel(bidding, campaign, "Снапшот при старте", "gRPC stream")
+Rel(partner, campaignDb, "Конфигурация партнёров", "SQL")
+Rel(edge, partner, "Конфигурация партнёров", "xDS")
+Rel(creative, s3, "Креативы", "S3 API")
+Rel(s3, cdn, "Origin", "HTTPS")
+Rel(finance, financeDb, "Транзакции + Outbox", "SQL")
+Rel(finance, kafka, "finance.charges", "Outbox")
+Rel(finance, payment, "Пополнения", "gRPC")
+Rel(payment, paymentGateway, "Платежи, webhooks", "HTTPS / REST")
+
+@enduml

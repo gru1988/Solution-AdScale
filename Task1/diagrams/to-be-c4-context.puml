@@ -1,0 +1,29 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+
+LAYOUT_WITH_LEGEND()
+
+title C4 System Context — AdScale (TO-BE)
+
+Person(advertiser, "Рекламодатель", "Запускает кампании, управляет бюджетами и ставками")
+Person_Ext(endUser, "Пользователь сайта/приложения", "Видит рекламу и кликает")
+Person(ops, "Команда AdScale", "Разработка, DevOps/SRE, поддержка")
+
+System(adscale, "AdScale Platform", "RTB, управление кампаниями, учёт событий, финансы, аналитика")
+
+System_Ext(dsp, "DSP / SSP партнёры", "Отправляют bid requests, получают bid responses (OpenRTB)")
+System_Ext(payment, "Платёжные шлюзы", "Пополнение рекламных бюджетов")
+System_Ext(cdn, "CDN", "Раздача креативов")
+System_Ext(idp, "Identity Provider", "SSO / OAuth2 для рекламодателей")
+
+Rel(dsp, adscale, "Bid requests, win/billing notices", "HTTPS / OpenRTB")
+Rel(adscale, dsp, "Bid responses, отчёты по партнёрству", "HTTPS")
+Rel(advertiser, adscale, "Кампании, бюджеты, отчёты", "HTTPS")
+Rel(endUser, adscale, "Показы и клики", "HTTPS")
+Rel(endUser, cdn, "Загружает креативы", "HTTPS")
+Rel(adscale, cdn, "Публикует креативы", "HTTPS")
+Rel(adscale, payment, "Платежи", "HTTPS / REST")
+Rel(adscale, idp, "Аутентификация", "OIDC")
+Rel(ops, adscale, "Эксплуатация, мониторинг SLO", "HTTPS")
+
+@enduml
