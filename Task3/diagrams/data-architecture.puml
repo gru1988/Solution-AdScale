@@ -1,0 +1,65 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+LAYOUT_LEFT_RIGHT()
+
+title Data Architecture — Database per Service (TO-BE)
+
+AddElementTag("oltp", $bgColor="#6A1B9A", $fontColor="#FFFFFF", $legendText="OLTP (PostgreSQL)")
+AddElementTag("kv", $bgColor="#C62828", $fontColor="#FFFFFF", $legendText="KV / in-memory (Redis)")
+AddElementTag("olap", $bgColor="#1565C0", $fontColor="#FFFFFF", $legendText="OLAP (ClickHouse)")
+AddElementTag("stream", $bgColor="#455A64", $fontColor="#FFFFFF", $legendText="Поток событий / объектное хранилище")
+
+System_Boundary(bidding_b, "Bidding") {
+    Container(bidding, "Bidding Service", "C++ / Go", "L1: снапшот кампаний в памяти")
+}
+System_Boundary(budget_b, "Budget & Pacing") {
+    Container(budget, "Budget & Pacing", "Go")
+    ContainerDb(budgetDb, "Budget Store", "Redis Cluster, AOF", "Расход за сутки, lease", $tags="kv")
+}
+System_Boundary(profile_b, "User Profile") {
+    Container(profile, "User Profile", "Go")
+    ContainerDb(profileDb, "Profile Store", "Redis Cluster → Aerospike", "Сегменты, frequency caps", $tags="kv")
+}
+System_Boundary(campaign_b, "Campaign") {
+    Container(campaign, "Campaign Service", "Go")
+    ContainerDb(campaignDb, "Campaign DB", "PostgreSQL + Patroni", "Кампании, креативы, таргетинг, outbox", $tags="oltp")
+}
+System_Boundary(stats_b, "Statistics / Analytics") {
+    Container(collector, "Event Collector", "Go")
+    Container(stats, "Statistics Service", "Go / Python")
+    Container(analytics, "Analytics Service", "Python")
+    ContainerDb(ch, "Events DWH", "ClickHouse: шарды по campaign_id, 2 реплики", "events_raw, агрегаты (MV)", $tags="olap")
+    ContainerDb(rt, "Realtime counters", "Redis (mgmt)", "Счётчики «сегодня», кеш отчётов", $tags="kv")
+}
+System_Boundary(finance_b, "Finance") {
+    Container(finance, "Finance Service", "Go")
+    ContainerDb(financeDb, "Finance DB", "PostgreSQL, sync replication", "Леджер, балансы, processed_events, outbox", $tags="oltp")
+}
+
+ContainerQueue(kafka, "Apache Kafka", "Avro + Schema Registry", "Шина событий", $tags="stream")
+ContainerDb(s3, "Object Storage", "S3", "Архив событий (Parquet), бэкапы, снапшоты", $tags="stream")
+
+Rel(campaign, campaignDb, "CRUD + outbox", "SQL")
+Rel(campaignDb, kafka, "campaign.changes", "Debezium")
+Rel(kafka, bidding, "campaign.changes", "consume")
+Rel(bidding, budgetDb, "lease", "Lua")
+Rel(bidding, profileDb, "сегменты, caps", "RESP")
+Rel(bidding, kafka, "auction.results", "produce")
+Rel(collector, kafka, "impressions, clicks", "produce")
+Rel(kafka, stats, "события", "consume")
+Rel(stats, ch, "batch insert", "native")
+Rel(stats, rt, "инкременты", "RESP")
+Rel(stats, kafka, "billing.batches", "produce")
+Rel(analytics, ch, "отчёты (read replicas)", "SQL")
+Rel(kafka, budget, "расход", "consume")
+Rel(budget, budgetDb, "счётчики", "RESP")
+Rel(kafka, profile, "caps", "consume")
+Rel(profile, profileDb, "запись", "RESP")
+Rel(kafka, finance, "billing.batches, payments", "consume")
+Rel(finance, financeDb, "проводки + outbox", "SQL")
+Rel(financeDb, kafka, "finance.charges, finance.balance", "Debezium")
+Rel(kafka, s3, "архив", "S3 Sink")
+
+@enduml

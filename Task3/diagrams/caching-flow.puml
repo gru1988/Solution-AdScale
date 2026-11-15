@@ -1,0 +1,38 @@
+@startuml
+title Кеширование: прогрев при старте пода и событийная инвалидация
+autonumber
+
+participant "Kubernetes" as K8S
+participant "Bidding pod\n(L1 cache)" as BID
+participant "Campaign Service" as CS
+database "S3\n(резервный снапшот)" as S3
+queue "Kafka\ncampaign.changes" as K
+database "Redis (hot path)" as R
+participant "Envoy" as GW
+
+== Прогрев (cache warming) ==
+K8S -> BID : start (readyz = false)
+BID -> CS : StreamSnapshot() (gRPC stream)
+alt Campaign Service недоступен
+    BID -> S3 : последний снапшот (≤ 5 мин)
+end
+BID -> BID : построить индексы (copy-on-write)
+BID -> K : подписка с offset снапшота, догон изменений
+BID -> R : открыть пул соединений, PING
+BID -> BID : синтетические запросы (прогрев CPU-кешей)
+BID -> K8S : readyz = true
+K8S -> GW : endpoint добавлен
+GW -> BID : slow start: трафик растёт 0 → 100% за 30 с
+
+== Событийная инвалидация ==
+CS -> R : SET paused:{cmp} (при паузе — синхронно)
+CS -> K : CampaignUpdated (outbox → Debezium)
+K -> BID : событие
+BID -> BID : применить к копии индексов,\nатомарно заменить снапшот
+
+== Страховка ==
+BID -> CS : каждые 10 мин: сверка версии/контрольной суммы
+alt расхождение
+    BID -> CS : полная ресинхронизация
+end
+@enduml

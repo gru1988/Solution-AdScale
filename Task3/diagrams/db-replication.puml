@@ -1,0 +1,63 @@
+@startuml
+title Репликация и шардирование хранилищ (один регион, 3 AZ)
+
+skinparam componentStyle rectangle
+skinparam defaultTextAlignment center
+
+package "Finance DB (PostgreSQL + Patroni)" {
+  database "Primary\nAZ-a" as fp
+  database "Sync standby\nAZ-b" as fs1
+  database "Sync/async standby\nAZ-c (отчёты)" as fs2
+  database "Async replica\nрегион B (DR)" as fdr
+  fp --> fs1 : sync (ANY 1)
+  fp --> fs2 : sync (ANY 1)
+  fp ..> fdr : async
+}
+
+package "Campaign DB (PostgreSQL + Patroni)" {
+  database "Primary\nAZ-a" as cp
+  database "Sync standby\nAZ-b" as cs
+  database "Read replica\nAZ-c (снапшоты, кабинет)" as cr
+  database "Async replica\nрегион B" as cdr
+  cp --> cs : sync
+  cp ..> cr : async
+  cp ..> cdr : async
+}
+
+package "Redis Cluster (hot path)" {
+  node "Shard 1\nmaster AZ-a / replica AZ-b" as r1
+  node "Shard 2\nmaster AZ-b / replica AZ-c" as r2
+  node "Shard 3\nmaster AZ-c / replica AZ-a" as r3
+  note bottom of r2
+    16 384 hash slots
+    budget:{campaign_id}, lease:{campaign_id}:pod
+    seg:{user_id}, fcap:{user_id}
+  end note
+}
+
+package "ClickHouse (Distributed, sharding_key = cityHash64(campaign_id))" {
+  node "Shard 1\nreplica A (запись) / replica B (аналитика)" as ch1
+  node "Shard 2\nreplica A / replica B" as ch2
+  node "Shard 3\nreplica A / replica B" as ch3
+  node "ClickHouse Keeper x3" as keeper
+  ch1 -[hidden]- ch2
+  ch2 -[hidden]- ch3
+  keeper ..> ch1
+  keeper ..> ch2
+  keeper ..> ch3
+  note bottom of ch2
+    PARTITION BY toYYYYMMDD(ts)
+    ORDER BY (campaign_id, event_type, ts)
+    TTL сырые 90 дней, агрегаты 2 года
+  end note
+}
+
+package "Kafka (KRaft, RF=3, min.insync=2)" {
+  queue "Broker 1 AZ-a" as k1
+  queue "Broker 2 AZ-b" as k2
+  queue "Broker 3 AZ-c" as k3
+  note bottom of k2
+    ключ партиционирования: campaign_id
+  end note
+}
+@enduml

@@ -1,0 +1,45 @@
+@startuml
+title CQRS: разделение моделей записи и чтения
+
+left to right direction
+skinparam componentStyle rectangle
+
+package "Кампании" {
+  [Campaign Service\n(command)] as cc
+  database "PostgreSQL\nнормализованная модель" as cdb
+  queue "campaign.changes\n(compacted)" as cq
+  [Bidding: снапшот в памяти\n(query: инвертированные индексы)] as cr1
+  [BFF: кеш Redis\n(query)] as cr2
+  [ClickHouse dictionaries\n(query)] as cr3
+  cc --> cdb : write + outbox
+  cdb --> cq : Debezium
+  cq --> cr1
+  cq --> cr2
+  cq --> cr3
+}
+
+package "Статистика и аналитика" {
+  [Bidding / Event Collector\n(command: факты)] as sc
+  queue "auction.results\nad.impressions\nad.clicks" as sq
+  database "ClickHouse events_raw" as sraw
+  database "Materialized views\n(минутные/часовые агрегаты)" as smv
+  database "Redis: счётчики «сегодня»" as srt
+  [Analytics / BFF\n(query)] as sr
+  sc --> sq
+  sq --> sraw : batch
+  sraw --> smv : MV
+  sq --> srt : Statistics
+  smv --> sr
+  srt --> sr
+}
+
+package "Финансы" {
+  [Finance Service\n(command)] as fc
+  database "Леджер\n(append-only проводки)" as fl
+  database "Проекция account_balances\n(та же транзакция)" as fb
+  database "Витрины счетов\n(async-реплика / ClickHouse)" as fv
+  fc --> fl
+  fc --> fb
+  fl --> fv : Outbox → Kafka
+}
+@enduml

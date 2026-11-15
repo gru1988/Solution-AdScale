@@ -1,0 +1,71 @@
+@startuml
+title Kafka: продюсеры, топики, группы потребителей
+
+left to right direction
+skinparam componentStyle rectangle
+
+package "Продюсеры" {
+  [Bidding Service] as p_bid
+  [Event Collector] as p_ec
+  [Campaign Service\n(Outbox + Debezium)] as p_cs
+  [Budget & Pacing] as p_bp
+  [Statistics] as p_st
+  [Finance\n(Outbox + Debezium)] as p_fin
+  [Payment Adapter] as p_pay
+}
+
+package "Топики (ключ / партиции / retention)" {
+  queue "rtb.auction.results.v1\ncampaign_id / 48→96 / 48 ч" as t_ar
+  queue "rtb.ad.impressions.v1\ncampaign_id / 24→48 / 7 д" as t_imp
+  queue "rtb.ad.clicks.v1\ncampaign_id / 12→24 / 7 д" as t_clk
+  queue "campaign.changes.v1\ncampaign_id / 12 / compact" as t_cc
+  queue "budget.spend.v1\ncampaign_id / 24 / 3 д" as t_bs
+  queue "billing.batches.v1\ncampaign_id / 24 / 14 д" as t_bb
+  queue "finance.charges.v1\nadvertiser_id / 12 / 30 д" as t_fc
+  queue "finance.balance.v1\nadvertiser_id / 12 / compact" as t_fb
+  queue "payments.events.v1\npayment_id / 6 / 30 д" as t_pay
+}
+
+package "Consumer groups" {
+  [statistics-aggregator] as c_st
+  [clickhouse-raw-loader] as c_raw
+  [budget-pacing] as c_bp
+  [profile-updater] as c_pr
+  [finance-billing] as c_fin
+  [bidding-snapshot-<pod>] as c_bid
+  [analytics-dictionaries] as c_an
+  [s3-archiver] as c_s3
+}
+
+p_bid --> t_ar
+p_ec --> t_imp
+p_ec --> t_clk
+p_cs --> t_cc
+p_bp --> t_bs
+p_st --> t_bb
+p_fin --> t_fc
+p_fin --> t_fb
+p_pay --> t_pay
+
+t_ar --> c_st
+t_imp --> c_st
+t_clk --> c_st
+t_ar --> c_raw
+t_imp --> c_raw
+t_clk --> c_raw
+t_ar --> c_bp
+t_imp --> c_bp
+t_clk --> c_bp
+t_imp --> c_pr
+t_clk --> c_pr
+t_bb --> c_fin
+t_clk --> c_fin
+t_pay --> c_fin
+t_cc --> c_bid
+t_fb --> c_bp
+t_cc --> c_an
+t_ar --> c_s3
+t_imp --> c_s3
+t_clk --> c_s3
+t_fc --> c_s3
+@enduml

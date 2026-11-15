@@ -1,0 +1,60 @@
+@startuml
+title Мультирегиональное развёртывание и failover (TO-BE)
+
+skinparam componentStyle rectangle
+
+cloud "DSP-партнёры" as dsp
+node "GeoDNS / Anycast\n(health checks, TTL 30 с)" as dns
+
+package "Регион A (primary для управления и финансов)" {
+  [Edge RTB Gateway A] as gwA
+  [Bidding A\n(active)] as bidA
+  database "Redis A\n(Budget, Profile)" as redisA
+  queue "Kafka A" as kA
+  database "Campaign DB\nPRIMARY" as campA
+  database "Finance DB\nPRIMARY + sync standby" as finA
+  database "ClickHouse\n(центральный DWH)" as chA
+  [Campaign / Finance /\nStatistics / Analytics] as svcA
+}
+
+package "Регион B (active RTB, standby для управления)" {
+  [Edge RTB Gateway B] as gwB
+  [Bidding B\n(active)] as bidB
+  database "Redis B\n(Budget, Profile)" as redisB
+  queue "Kafka B" as kB
+  database "Campaign DB\nasync replica" as campB
+  database "Finance DB\nasync replica (DR)" as finB
+  [Campaign / Finance\n(standby, scaled to 0–1)] as svcB
+}
+
+dsp --> dns
+dns --> gwA
+dns --> gwB
+gwA --> bidA
+gwB --> bidB
+bidA --> redisA
+bidB --> redisB
+bidA --> kA
+bidB --> kB
+svcA --> campA
+svcA --> finA
+svcA --> chA
+
+kB ..> kA : MirrorMaker 2\n(события → центр)
+kA ..> kB : MirrorMaker 2\n(campaign.changes)
+campA ..> campB : WAL streaming (async)
+finA ..> finB : WAL streaming (async)
+
+note bottom of redisB
+  Бюджеты делятся между регионами квотами (lease),
+  межрегиональная синхронизация не нужна на пути запроса.
+end note
+
+note right of dns
+  Отказ региона: DNS убирает регион ≤ 1 мин,
+  второй регион рассчитан на 100% трафика + 20%.
+  RTB RTO ≤ 5 мин. Управление/финансы:
+  promote реплик в регионе B по решению дежурного,
+  RTO ≤ 30 мин.
+end note
+@enduml
