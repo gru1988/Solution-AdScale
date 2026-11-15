@@ -1,0 +1,52 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+LAYOUT_LEFT_RIGHT()
+
+title Взаимодействие сервисов и протоколы
+
+AddRelTag("sync", $textColor="#C62828", $lineColor="#C62828", $legendText="Синхронно (OpenRTB / gRPC / REST)")
+AddRelTag("async", $textColor="#1565C0", $lineColor="#1565C0", $lineStyle=DashedLine(), $legendText="Асинхронно (Kafka)")
+
+System_Ext(dsp, "DSP-партнёры", "OpenRTB")
+Person(adv, "Рекламодатель")
+Person_Ext(user, "Пользователь")
+
+Container(edge, "Edge RTB Gateway", "Envoy")
+Container(apigw, "API Gateway", "Envoy Gateway")
+Container(bid, "Bidding Service", "C++ / Go")
+Container(prof, "User Profile", "Go")
+Container(bud, "Budget & Pacing", "Go")
+Container(ec, "Event Collector", "Go")
+ContainerQueue(kafka, "Kafka", "Avro + Schema Registry")
+Container(camp, "Campaign Service", "Go")
+Container(stats, "Statistics", "Go / Python")
+Container(fin, "Finance", "Go")
+Container(an, "Analytics", "Python")
+Container(bff, "Advertiser BFF", "Node.js")
+
+Rel(dsp, edge, "OpenRTB 2.6", "HTTPS / JSON", $tags="sync")
+Rel(edge, bid, "bid", "HTTP/2", $tags="sync")
+Rel(bid, prof, "GetProfile", "gRPC, 8 мс", $tags="sync")
+Rel(bid, bud, "RenewLease (фоново)", "gRPC", $tags="sync")
+Rel(bid, camp, "StreamSnapshot (старт)", "gRPC stream", $tags="sync")
+Rel(dsp, ec, "win / bill notice", "HTTPS", $tags="sync")
+Rel(user, ec, "показ / клик", "HTTPS", $tags="sync")
+Rel(adv, apigw, "Кабинет", "HTTPS / REST", $tags="sync")
+Rel(apigw, bff, "REST", "HTTP", $tags="sync")
+Rel(bff, camp, "CRUD", "gRPC", $tags="sync")
+Rel(bff, fin, "Балансы", "gRPC", $tags="sync")
+Rel(bff, an, "Отчёты", "gRPC", $tags="sync")
+
+Rel(bid, kafka, "auction.results", "produce", $tags="async")
+Rel(ec, kafka, "ad.impressions, ad.clicks", "produce", $tags="async")
+Rel(camp, kafka, "campaign.changes", "outbox", $tags="async")
+Rel(kafka, bid, "campaign.changes", "consume", $tags="async")
+Rel(kafka, stats, "события", "consume", $tags="async")
+Rel(kafka, bud, "расход", "consume", $tags="async")
+Rel(kafka, prof, "caps", "consume", $tags="async")
+Rel(kafka, fin, "billing.batches, ad.clicks", "consume", $tags="async")
+Rel(stats, kafka, "billing.batches", "produce", $tags="async")
+
+@enduml

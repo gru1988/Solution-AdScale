@@ -1,0 +1,29 @@
+@startuml
+title Изменение кампании → обновление снапшота в Bidding (≤ 30 с)
+autonumber
+
+actor "Рекламодатель" as A
+participant "Dashboard / BFF" as BFF
+participant "Campaign Service\n(на переходе — монолит)" as CS
+database "Campaign DB\n(+ outbox)" as DB
+participant "Debezium" as DZ
+queue "Kafka\ncampaign.changes\n(compacted)" as K
+participant "Bidding Service\n(каждый инстанс)" as BID
+database "Redis" as R
+
+A -> BFF : Поставить кампанию на паузу
+BFF -> CS : UpdateCampaign (gRPC)
+CS -> DB : BEGIN; UPDATE campaigns; INSERT outbox; COMMIT
+CS -> R : SET paused:{campaign_id} (быстрый канал)
+CS --> BFF : OK
+DB -> DZ : WAL (logical replication)
+DZ -> K : CampaignUpdated (key=campaign_id)
+K -> BID : consume (своя consumer group на инстанс)
+BID -> BID : применить изменение к копии индекса,\nатомарно заменить снапшот (copy-on-write)
+note right of BID
+  Задержка обычно 1–3 с.
+  Пауза кампании дополнительно
+  проверяется по Redis при подборе
+  кандидатов (защита от лага CDC).
+end note
+@enduml

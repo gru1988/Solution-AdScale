@@ -1,0 +1,47 @@
+@startuml
+title Обработка bid request (hot path, SLA ≤ 80 мс)
+autonumber
+
+participant "DSP" as DSP
+participant "Edge RTB Gateway\n(Envoy)" as GW
+participant "Bidding Service" as BID
+database "Redis /\nUser Profile" as PROF
+participant "Budget Guard\n(локально)" as BG
+queue "Kafka" as K
+
+DSP -> GW : POST /openrtb/2.6/bid (tmax=100)
+activate GW
+GW -> GW : mTLS + allowlist → partner_id\nlocal rate limit (token bucket)\nдедлайн = now + 70 мс
+alt квота превышена или перегрузка
+    GW --> DSP : 204 No Content (no-bid)
+else
+    GW -> BID : HTTP/2 + x-partner-id, x-request-deadline
+    activate BID
+    BID -> BID : парсинг, валидация (≤ 2 мс)
+    BID -> PROF : сегменты, frequency caps (тайм-аут 5–8 мс)
+    alt ответ получен
+        PROF --> BID : профиль
+    else тайм-аут / circuit open
+        BID -> BID : fallback: без сегментов,\nдефолтный коэффициент ставки
+    end
+    BID -> BID : подбор кандидатов по индексам в памяти (≤ 8 мс)
+    BID -> BG : проверка lease бюджета (< 1 мс)
+    BG --> BID : допустимые кампании
+    BID -> BID : аукцион: eCPM, правила, floor (≤ 8 мс)
+    alt осталось < 10 мс или нет кандидатов
+        BID --> GW : 204 No Content
+    else есть победитель
+        BID -> BID : adm из шаблона, подписанные nurl/burl
+        BID --> GW : 200 BidResponse
+    end
+    BID ->> K : auction.results (async, вне пути ответа)
+    deactivate BID
+    GW --> DSP : ответ (P95 внутри AdScale ≈ 15–30 мс)
+end
+deactivate GW
+
+note over GW, BID
+  Retry на hot path не выполняются.
+  Route timeout 70 мс: при превышении — 204.
+end note
+@enduml

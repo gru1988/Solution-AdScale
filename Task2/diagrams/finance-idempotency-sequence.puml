@@ -1,0 +1,32 @@
+@startuml
+title Идемпотентное списание (Inbox + Ledger + Outbox)
+autonumber
+
+queue "Kafka\nbilling.batches" as K
+participant "Finance Consumer" as FC
+database "Finance DB" as DB
+participant "Debezium" as DZ
+queue "Kafka\nfinance.charges" as KO
+
+K -> FC : BillingBatch(event_id=hash(campaign, window_5m, offsets))
+FC -> DB : BEGIN
+FC -> DB : INSERT processed_events(event_id)\nON CONFLICT DO NOTHING
+alt вставлено 0 строк (дубль)
+    FC -> DB : COMMIT
+    FC -> K : commit offset
+    note right: повторная доставка\nотброшена без проводки
+else новое событие
+    FC -> DB : INSERT ledger_entries (дебет рекламодателя, кредит выручки)\nUNIQUE(source, source_id, account_id)
+    FC -> DB : UPDATE account_balances
+    FC -> DB : INSERT outbox(ChargeApplied)
+    FC -> DB : COMMIT
+    FC -> K : commit offset
+    DB -> DZ : WAL
+    DZ -> KO : ChargeApplied
+end
+
+note over FC, DB
+  Если процесс упал после COMMIT, но до commit offset,
+  событие придёт снова и будет отброшено (effectively-once).
+end note
+@enduml

@@ -1,0 +1,48 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title C4 Component Diagram — Edge RTB Gateway (Envoy)
+
+System_Ext(dsp, "DSP-партнёры", "OpenRTB поверх HTTPS")
+Container(lb, "L4 Load Balancer", "Cloud NLB", "TCP passthrough")
+Container(bidding, "Bidding Service v2", "C++ / Go", "Новый аукцион")
+Container(monolith, "Monolith Ad Server", "C++ / Go", "Только на переходный период")
+Container(shadow, "Bidding Service (shadow)", "C++ / Go", "Сравнение решений")
+Container(collector, "Event Collector", "Go", "win / bill")
+Container(pcs, "Partner Config Service", "Go", "Квоты, ключи, маршруты")
+Container(obs, "Observability", "Prometheus, Tempo, Loki", "")
+Container(vault, "Vault", "HashiCorp Vault", "Сертификаты и ключи")
+
+Container_Boundary(envoy, "Edge RTB Gateway (Envoy, ≥ 3 инстанса на регион)") {
+    Component(tls, "TLS / mTLS Listener", "Envoy listener", "Терминация TLS, проверка клиентского сертификата")
+    Component(rbac, "IP Allowlist", "RBAC filter", "Подсети партнёра")
+    Component(authn, "Partner AuthN", "ext/lua filter", "Сертификат или x-api-key → partner_id")
+    Component(rl, "Local Rate Limit", "local_ratelimit", "Token bucket на партнёра; превышение → 204")
+    Component(ac, "Adaptive Concurrency", "adaptive_concurrency", "Load shedding по latency апстрима")
+    Component(router, "Router", "HTTP router", "Маршрут по партнёру и версии, weighted clusters, mirror, timeout 70 мс")
+    Component(cb, "Circuit Breaker + Outlier Detection", "cluster config", "Лимиты соединений/очереди, выброс больных подов")
+    Component(stats, "Stats + Tracing", "OpenTelemetry", "Гистограммы latency по партнёрам, access log")
+}
+
+Component(xds, "xDS Control Plane", "go-control-plane", "Генерирует конфигурацию из Partner Config и Git")
+
+Rel(dsp, lb, "HTTPS", "OpenRTB")
+Rel(lb, tls, "TCP")
+Rel(tls, rbac, "")
+Rel(rbac, authn, "")
+Rel(authn, rl, "partner_id")
+Rel(rl, ac, "")
+Rel(ac, router, "")
+Rel(router, cb, "")
+Rel(cb, bidding, "weight N%", "HTTP/2")
+Rel(cb, monolith, "weight 100−N%", "HTTP/1.1")
+Rel(router, shadow, "mirror X%", "HTTP/2")
+Rel(router, collector, "/win, /bill", "HTTP/2")
+Rel(stats, obs, "метрики, трейсы, логи")
+Rel(pcs, xds, "конфигурация партнёров", "gRPC")
+Rel(vault, xds, "сертификаты, ключи (SDS)")
+Rel(xds, router, "LDS/RDS/CDS", "xDS")
+
+@enduml

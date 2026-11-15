@@ -1,0 +1,19 @@
+@startuml
+title Circuit Breaker — состояния (пример: Bidding → Redis/User Profile)
+
+[*] --> Closed
+
+state Closed : вызовы проходят\nсчитаем ошибки и тайм-ауты\nв скользящем окне 1 с
+state Open : вызовы не выполняются\nсразу fallback:\nторговля без сегментов
+state HalfOpen as "Half-Open" : пропускаем N=10\nпробных вызовов
+
+Closed --> Open : доля ошибок/тайм-аутов > 20%\nпри ≥ 100 вызовах в окне
+Open --> HalfOpen : истёк wait (2 с, растёт ×2 до 30 с)
+HalfOpen --> Closed : все пробные вызовы успешны
+HalfOpen --> Open : хотя бы один неуспешен
+
+note right of Open
+  Метрика circuit_state{dependency}
+  и алерт, если Open > 1 мин
+end note
+@enduml

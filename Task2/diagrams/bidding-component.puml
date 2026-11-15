@@ -1,0 +1,47 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title C4 Component Diagram — Bidding Service
+
+Container(edge, "Edge RTB Gateway", "Envoy", "mTLS, rate limit, тайм-аут 70 мс")
+ContainerDb(redis, "Redis Cluster", "Redis", "Сегменты, frequency caps, бюджеты/lease")
+Container(profile, "User Profile Service", "Go, gRPC", "Через год заменяет прямое чтение Redis")
+Container(budget, "Budget & Pacing Service", "Go, gRPC", "Выдача lease бюджета")
+ContainerQueue(kafka, "Apache Kafka", "Kafka", "campaign.changes, auction.results")
+Container(campaign, "Campaign Service", "Go, gRPC", "Источник снапшота кампаний")
+ContainerDb(s3, "Object Storage", "S3", "Резервный снапшот кампаний")
+
+Container_Boundary(bidding, "Bidding Service (C++ / Go)") {
+    Component(handler, "Request Handler", "Go, HTTP/2", "Парсинг и валидация OpenRTB, адаптер версий 2.5/2.6")
+    Component(deadline, "Deadline Controller", "Go", "Остаток бюджета времени, no-bid при нехватке")
+    Component(resolver, "User Resolver", "Go", "ID пользователя → сегменты, caps; circuit breaker 5–8 мс")
+    Component(selector, "Candidate Selector", "C++", "Инвертированные индексы (bitset) по гео, устройству, сегментам")
+    Component(guard, "Budget Guard", "C++", "Локальные атомарные счётчики lease, фоновое продление")
+    Component(auction, "Auction Core", "C++", "eCPM, бизнес-правила, floor, выбор победителя")
+    Component(builder, "Response Builder", "Go", "BidResponse, adm из шаблона, подписанные nurl/burl")
+    Component(snapshot, "Snapshot Manager", "Go", "Загрузка и инкрементальное обновление снапшота (copy-on-write)")
+    Component(publisher, "Event Publisher", "Go, librdkafka", "Асинхронная публикация auction.results батчами")
+}
+
+Rel(edge, handler, "POST /openrtb/2.6/bid", "HTTP/2")
+Rel(handler, deadline, "Старт отсчёта")
+Rel(handler, resolver, "Профиль пользователя")
+Rel(resolver, redis, "GET seg/fcap", "RESP, 5 мс")
+Rel(resolver, profile, "GetProfile", "gRPC, 8 мс")
+Rel(handler, selector, "Кандидаты")
+Rel(selector, snapshot, "Читает индексы")
+Rel(selector, guard, "Фильтр по бюджету")
+Rel(guard, budget, "Продление lease (фоново)", "gRPC")
+Rel(guard, redis, "Lua: lease (переход)", "RESP")
+Rel(selector, auction, "Список кандидатов")
+Rel(auction, builder, "Победитель и цена")
+Rel(builder, handler, "BidResponse / 204")
+Rel(auction, publisher, "Результат аукциона")
+Rel(publisher, kafka, "auction.results", "async")
+Rel(kafka, snapshot, "campaign.changes", "consume")
+Rel(snapshot, campaign, "StreamSnapshot при старте", "gRPC stream")
+Rel(snapshot, s3, "Резервный снапшот каждые 5 мин", "S3 API")
+
+@enduml

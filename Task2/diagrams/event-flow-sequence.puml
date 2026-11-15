@@ -1,0 +1,41 @@
+@startuml
+title Поток событий: win / показ / клик → статистика, бюджет, финансы
+autonumber
+
+participant "DSP" as DSP
+actor "Пользователь" as U
+participant "Event Collector" as EC
+database "Redis\n(dedup)" as R
+queue "Kafka" as K
+participant "Statistics" as ST
+database "ClickHouse" as CH
+participant "Budget & Pacing" as BP
+participant "Finance" as FIN
+database "Finance DB" as FDB
+
+DSP -> EC : GET /bill?a=AUCTION&p=${AUCTION_PRICE}&t=HMAC
+EC -> EC : проверка HMAC и срока токена
+EC -> R : SET NX dedup:{auction_id}:bill TTL 24h
+alt первый раз
+    EC ->> K : ad.impressions (key=campaign_id, event_id детерминирован)
+end
+EC --> DSP : 204
+
+U -> EC : GET /click?a=AUCTION&t=HMAC
+EC ->> K : ad.clicks
+EC --> U : 302 Redirect → лендинг рекламодателя
+
+par потребители читают независимо
+    K -> ST : consumer group statistics
+    ST -> ST : дедупликация, антифрод, агрегаты по минутам
+    ST -> CH : batch insert (раз в 1–5 с)
+    ST ->> K : billing.batches (агрегат за 5 мин)
+else
+    K -> BP : consumer group budget-pacing
+    BP -> BP : фактический расход → корректировка lease и pacing
+else
+    K -> FIN : consumer group finance-billing (billing.batches, ad.clicks)
+    FIN -> FDB : BEGIN; processed_events (ON CONFLICT DO NOTHING);\nledger_entries; balances; outbox; COMMIT
+    FIN -> K : commit offset
+end
+@enduml
