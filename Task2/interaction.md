@@ -57,9 +57,9 @@
 | 3 | Bidding → User Profile | gRPC | sync | 8 мс | best effort | торговля без сегментов |
 | 4 | Bidding → Budget & Pacing | gRPC (фоново, продление lease) | async to request | 50 мс | at-least-once с backoff | остаток lease |
 | 5 | Bidding → Kafka `auction.results` | Kafka producer | async | — | at-least-once, idempotent producer | локальный буфер |
-| 6 | DSP → Event Collector (win/bill) | HTTPS GET (`nurl`/`burl`) | sync, быстрый 200/204 | 200 мс | — | DSP повторяет по своей политике; дедупликация по `auction_id` |
-| 7 | Пользователь → Event Collector (показ/клик) | HTTPS (пиксель, 302-редирект) | sync | 100 мс | — | редирект всегда, даже если Kafka недоступна (событие в локальный буфер) |
-| 8 | Event Collector → Kafka | Kafka producer | async | — | `acks=all` | локальный буфер |
+| 6 | DSP → Event Collector (win/bill) | HTTPS GET (`nurl`/`burl`) | sync; `204` только после `acks=all` в Kafka | 200 мс | at-least-once | Kafka не подтвердила → `503` без метки дедупликации, DSP повторяет; дубли отбрасываются по детерминированному `event_id` ([reliability.md, 3.2](reliability.md#32-event-collector-подтверждение-только-после-надёжной-фиксации)) |
+| 7 | Пользователь → Event Collector (показ/клик) | HTTPS (пиксель, 302-редирект) | sync | 100 мс | at-least-once | `302` после `acks=all` (≤ 50 мс) или после записи в надёжный локальный журнал (fsync), если Kafka не ответила |
+| 8 | Event Collector → Kafka | Kafka producer | sync к запросу (ждём подтверждения) | 150 мс (win/bill), 50 мс (клики) | `acks=all`, idempotent producer | win/bill → `503`; клики → надёжный журнал |
 | 9 | Kafka → Statistics / Finance / Budget / Profile / Analytics | Kafka consumer groups | async | — | at-least-once + идемпотентность потребителя | DLQ |
 | 10 | Campaign → Kafka `campaign.changes` | Transactional Outbox + Debezium | async | — | at-least-once, compacted topic | — |
 | 11 | Bidding → Campaign (старт) | gRPC server-streaming `StreamSnapshot` | sync | 30 с | — | снапшот из S3 |
