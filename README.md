@@ -12,6 +12,8 @@
 | Архитектура | гибридный монолит, одна PostgreSQL | монолит + выделенный Bidding Service, Kafka, Redis | микросервисы, event-driven, мультирегион |
 | Деплой | вручную | Docker + CI/CD для hot path | Kubernetes, GitOps, canary |
 
+> Исправления по замечаниям ревью собраны в [REVIEW-FIXES.md](REVIEW-FIXES.md).
+
 ## Структура репозитория
 
 ```
