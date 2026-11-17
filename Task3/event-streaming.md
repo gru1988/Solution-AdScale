@@ -114,7 +114,7 @@
 | Продюсер | Настройки | Комментарий |
 |---|---|---|
 | Bidding (`auction.results`) | `acks=all`, `enable.idempotence=true`, `linger.ms=5`, `batch.size=256KB`, `compression.type=lz4`, `max.block.ms=0` | `max.block.ms=0` — продюсер никогда не блокирует обработку запроса; при переполнении буфера — локальный spill |
-| Event Collector (оплачиваемые) | те же + `delivery.timeout.ms=120000` | отдельный продюсер (bulkhead) для оплачиваемых событий |
+| Event Collector (оплачиваемые) | `acks=all`, `enable.idempotence=true`, `linger.ms=1`, `delivery.timeout.ms=150` (win/bill) / `50` (клики) | отдельный продюсер (bulkhead). **Ответ DSP отправляется только после подтверждения записи**; метка дедупликации в Redis ставится после подтверждения, а не до него ([Task2/reliability.md, 3.2](../Task2/reliability.md#32-event-collector-подтверждение-только-после-надёжной-фиксации)) |
 | Outbox (Debezium) | exactly-once source connector | гарантированная публикация после коммита транзакции |
 
 ## 5. Группы потребителей

@@ -25,7 +25,7 @@
 |---|---|---|
 | Budget & Pacing | **Redis Cluster** (источник истины для расхода за текущие сутки, AOF) + периодические снапшоты в PostgreSQL Finance/Campaign | Атомарные инкременты и Lua-скрипты на сотнях тысяч операций/с; ежесуточное закрытие дня фиксируется в Finance; при потере Redis расход восстанавливается из ClickHouse |
 | User Profile | **Redis Cluster** на старте → **Aerospike** при росте > 100 ГБ | KV-доступ по `user_id` за ≤ 1 мс, TTL на записи; Aerospike — гибрид RAM-индекс + SSD-данные, дешевле Redis на больших объёмах |
-| Event Collector | нет (Kafka) + Redis для дедупликации | Stateless-приёмник |
+| Event Collector | нет (Kafka — надёжная фиксация события до ответа) + Redis для меток уже записанных событий + PersistentVolume для журнала кликов при недоступности Kafka | Stateless-приёмник; источник истины — Kafka |
 | Creative Delivery | **S3** + CDN; метаданные — в Campaign DB | Бинарные файлы, раздача через CDN |
 | Partner Config | **PostgreSQL** (отдельная схема в кластере Campaign) | Малый объём, редкие изменения, транзакционность |
 | Advertiser BFF | нет (только кеш Redis) | Агрегирует данные других сервисов |
