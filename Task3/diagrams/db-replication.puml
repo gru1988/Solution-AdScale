@@ -4,14 +4,22 @@ title Репликация и шардирование хранилищ (оди�
 skinparam componentStyle rectangle
 skinparam defaultTextAlignment center
 
-package "Finance DB (PostgreSQL + Patroni)" {
-  database "Primary\nAZ-a" as fp
-  database "Sync standby\nAZ-b" as fs1
-  database "Sync/async standby\nAZ-c (отчёты)" as fs2
-  database "Async replica\nрегион B (DR)" as fdr
-  fp --> fs1 : sync (ANY 1)
-  fp --> fs2 : sync (ANY 1)
-  fp ..> fdr : async
+package "Finance DB (PostgreSQL + Patroni quorum mode)" {
+  database "fin_a1 Primary\nрегион A, AZ-a" as fp
+  database "fin_a2\nрегион A, AZ-b" as fs1
+  database "fin_b1\nрегион B, AZ-a" as fb1
+  database "fin_b2\nрегион B, AZ-b" as fb2
+  database "fin_a3 async\nрегион A, AZ-c (отчёты)" as fs2
+  fp --> fs1 : кворум
+  fp --> fb1 : кворум
+  fp --> fb2 : кворум
+  fp ..> fs2 : async
+  note bottom of fb1
+    synchronous_standby_names =
+    'ANY 2 (fin_a2, fin_b1, fin_b2)'
+    → каждая подтверждённая проводка
+    есть минимум в одной реплике региона B
+  end note
 }
 
 package "Campaign DB (PostgreSQL + Patroni)" {
