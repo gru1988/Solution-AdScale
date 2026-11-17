@@ -5,36 +5,55 @@ autonumber
 participant "DSP" as DSP
 actor "Пользователь" as U
 participant "Event Collector" as EC
-database "Redis\n(dedup)" as R
+database "Redis\n(метки записанных\nсобытий)" as R
 queue "Kafka" as K
+database "Локальный журнал\n(PersistentVolume)" as J
 participant "Statistics" as ST
 database "ClickHouse" as CH
 participant "Budget & Pacing" as BP
 participant "Finance" as FIN
 database "Finance DB" as FDB
 
+== Billing notice: сначала надёжная запись, потом подтверждение ==
 DSP -> EC : GET /bill?a=AUCTION&p=${AUCTION_PRICE}&t=HMAC
 EC -> EC : проверка HMAC и срока токена
-EC -> R : SET NX dedup:{auction_id}:bill TTL 24h
-alt первый раз
-    EC ->> K : ad.impressions (key=campaign_id, event_id детерминирован)
+EC -> R : EXISTS dedup:{auction_id}:bill
+alt метка есть (событие уже надёжно записано)
+    EC --> DSP : 204
+else метки нет или Redis недоступен
+    EC -> K : produce ad.impressions\nevent_id = hash(auction_id, bill), acks=all
+    alt Kafka подтвердила запись
+        K --> EC : ack (≥ 2 реплики)
+        EC -> R : SET dedup:{auction_id}:bill EX 86400\n(только после ack)
+        EC --> DSP : 204
+    else ошибка / тайм-аут 150 мс
+        EC --> DSP : 503 (метка не ставится)
+        note right of DSP : DSP повторяет уведомление;\nдубль в Kafka отбросят\nпотребители по event_id
+    end
 end
-EC --> DSP : 204
 
+== Клик: редирект только после надёжной фиксации ==
 U -> EC : GET /click?a=AUCTION&t=HMAC
-EC ->> K : ad.clicks
+EC -> K : produce ad.clicks (acks=all, тайм-аут 50 мс)
+alt ack получен
+    K --> EC : ack
+else Kafka не ответила
+    EC -> J : append + fsync
+    note right of J : фоновый процесс досылает\nжурнал в Kafka
+end
 EC --> U : 302 Redirect → лендинг рекламодателя
 
+== Идемпотентные потребители ==
 par потребители читают независимо
     K -> ST : consumer group statistics
-    ST -> ST : дедупликация, антифрод, агрегаты по минутам
-    ST -> CH : batch insert (раз в 1–5 с)
+    ST -> ST : дедупликация по event_id, антифрод, агрегаты по минутам
+    ST -> CH : batch insert (ReplacingMergeTree по event_id)
     ST ->> K : billing.batches (агрегат за 5 мин)
 else
     K -> BP : consumer group budget-pacing
-    BP -> BP : фактический расход → корректировка lease и pacing
+    BP -> BP : фактический расход (дедупликация по event_id)
 else
-    K -> FIN : consumer group finance-billing (billing.batches, ad.clicks)
+    K -> FIN : consumer group finance-billing
     FIN -> FDB : BEGIN; processed_events (ON CONFLICT DO NOTHING);\nledger_entries; balances; outbox; COMMIT
     FIN -> K : commit offset
 end
