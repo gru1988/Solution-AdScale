@@ -19,6 +19,6 @@
 | Campaign | PostgreSQL + Patroni | master–slave (sync + async), read replica; без шардирования; CQRS | ≤ 5 с / ≤ 1 мин |
 | Statistics | Kafka → ClickHouse + Redis-счётчики | ClickHouse шарды по `cityHash64(campaign_id)` × 2 реплики | ≤ 1 мин / ≤ 30 мин |
 | Analytics | ClickHouse (выделенные реплики) | read replicas; на переходе — PostgreSQL read replica | ≤ 24 ч / ≤ 4 ч |
-| Finance | PostgreSQL, синхронная репликация | master–slave (ANY 1 sync), партиционирование леджера по месяцам; шардирование по `advertiser_id` — в резерве | 0 / ≤ 15 мин |
+| Finance | PostgreSQL, кворумная синхронная репликация с обязательной репликой в регионе B | master–slave (`ANY 2` из 1 локальной и 2 межрегиональных реплик), партиционирование леджера по месяцам; шардирование по `advertiser_id` — в резерве | 0 / ≤ 15 мин |
 
 Главный принцип: **hot path читает только из памяти и Redis, пишет только в Kafka**; реляционные БД обслуживают управление и деньги, ClickHouse — всё аналитическое.

@@ -22,7 +22,7 @@
 | Redis Cluster (бюджеты, профили, caps) | master–replica для каждого шарда, автоматический failover | **да**, hash slots; ключи с hash tag | реплики не используются для чтения бюджетов (нужна свежесть), для профилей — допустимо | — |
 | Campaign DB (PostgreSQL) | **master–slave**: Patroni, 1 синхронная реплика (другая AZ) + 1 асинхронная (+ асинхронная в регионе B) | **нет**: объём единицы ГБ, запись редкая | **да**: стартовые снапшоты Bidding, отчёты кабинета | **да** |
 | ClickHouse (Statistics/Analytics) | ReplicatedMergeTree, 2 реплики на шард (ClickHouse Keeper) | **да**, по `campaign_id` | **да**: отдельный набор реплик для Analytics | **да** (query side) |
-| Finance DB (PostgreSQL) | **master–slave с синхронной репликацией** (RPO = 0) + асинхронная реплика для отчётов и DR | **нет** в горизонте года; партиционирование леджера по месяцам. Подготовка к шардированию по `advertiser_id` (Citus) | **да**: отчёты и сверки | **да** (леджер → проекции балансов) |
+| Finance DB (PostgreSQL) | **master–slave с кворумной синхронной репликацией** `ANY 2 (fin_a2, fin_b1, fin_b2)` — подтверждение обязательно включает реплику в регионе B (RPO = 0 и при потере региона) + асинхронная реплика для отчётов | **нет** в горизонте года; партиционирование леджера по месяцам. Подготовка к шардированию по `advertiser_id` (Citus) | **да**: отчёты и сверки | **да** (леджер → проекции балансов) |
 | Kafka | RF = 3, `min.insync.replicas = 2` | партиции по `campaign_id` | — | шина между write и read side |
 
 ## 3. Репликация master–slave
@@ -31,7 +31,7 @@
 
 | Кластер | Топология | Режим | Зачем |
 |---|---|---|---|
-| **Finance** | primary + sync standby (AZ-b) + async replica (AZ-c, отчёты) + async replica (регион B, DR) | `synchronous_commit = on`, `synchronous_standby_names = 'ANY 1 (standby_b, standby_c)'` | Ни одна подтверждённая проводка не теряется (RPO = 0); при отказе одной реплики запись не блокируется |
+| **Finance** | primary (A, AZ-a) + кандидаты кворума: `fin_a2` (A, AZ-b), `fin_b1`, `fin_b2` (регион B) + async replica `fin_a3` (A, AZ-c, отчёты) | `synchronous_commit = on`, `synchronous_standby_names = 'ANY 2 (fin_a2, fin_b1, fin_b2)'`, Patroni `synchronous_mode: quorum`, `synchronous_mode_strict: true` | В кворуме только один узел региона A, поэтому любая подтверждённая проводка записана минимум на одной реплике региона B: RPO = 0 при отказе узла, AZ **и всего региона**. Отказ одного любого кандидата запись не блокирует. Цена — +RTT между регионами на `COMMIT` (Finance не на hot path). Подробно: [failover.md, раздел 4](failover.md#4-finance-rpo--0-при-потере-региона) |
 | **Campaign** | primary + sync standby + async replica + async replica (регион B) | `synchronous_commit = on` для изменений, `remote_write` допустим | HA, разгрузка чтений (снапшоты, кабинет), DR |
 | **Монолит (переходный период)** | primary + standby (HA) + read replica (аналитика) | async | Снять аналитику с primary уже в первый месяц |
 | **Redis** | 1 replica на каждый master-шард, Redis Cluster failover | async | Быстрый failover (секунды); потеря последних мс записей компенсируется lease/сверкой |

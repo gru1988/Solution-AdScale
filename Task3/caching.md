@@ -29,7 +29,7 @@
 | **Сегменты пользователя** | L2 hot | `seg:{user_id}` | 30 дней (продлевается при обновлении) | перезаписывается Profile Service по событиям | write-behind из событий |
 | **Frequency caps** | L2 hot | `fcap:{user_id}` (HASH) | равен периоду ограничения (обычно 24 ч) | `HINCRBY` по событию показа | — |
 | **Кеш eCPM / pCTR** | L1 Bidding | `(campaign, placement_bucket)` | 30 с | истечение | refresh-ahead |
-| **Дедупликация событий** | L2 hot | `dedup:{auction_id}:{type}` | 24 ч | — | `SET NX` |
+| **Метки уже записанных событий** | L2 hot | `dedup:{auction_id}:{type}` | 24 ч | ставится **только после** подтверждения записи в Kafka (`acks=all`); потеря метки безопасна — дубли отбрасываются потребителями по `event_id` | write-after-commit |
 | **Конфигурация партнёров** | Envoy (в памяти) | — | — | push через xDS | — |
 | **Список кампаний рекламодателя (кабинет)** | L2 mgmt | `bff:campaigns:{advertiser_id}` | 60 с | удаление ключа при записи через BFF + событие `campaign.changes` | cache-aside |
 | **Реалтайм-статистика «сегодня»** | L2 mgmt | `rt:{campaign_id}:{date}` (HASH: imps, clicks, spend) | 48 ч | инкременты из Statistics consumer | write-through |
